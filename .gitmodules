@@ -4,3 +4,9 @@
 [submodule "third_party/Catch2"]
 	path = third_party/Catch2
 	url = git@github.com:catchorg/Catch2
+[submodule "third_party/lbfgs-cpp"]
+	path = third_party/lbfgs-cpp
+	url = git@github.com:twesterhout/lbfgs-cpp
+[submodule "third_party/gsl-lite"]
+	path = third_party/gsl-lite
+	url = git@github.com:martinmoene/gsl-lite
