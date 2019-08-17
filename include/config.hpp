@@ -72,6 +72,14 @@
 #define DA_NAMESPACE_BEGIN namespace dual_annealing {
 #define DA_NAMESPACE_END } // namespace dual_annealing
 
+#include <cstdio>
+#define DUAL_ANNEALING_TRACE(fmt, ...)                                         \
+    do {                                                                       \
+        ::std::fprintf(                                                        \
+            stderr, "\x1b[1m\x1b[97m%s:%i:\x1b[0m \x1b[90mtrace:\x1b[0m " fmt, \
+            __FILE__, __LINE__, __VA_ARGS__);                                  \
+    } while (false)
+
 #if !defined(NDEBUG)
 #    if defined(__cplusplus)
 #        include <cassert>
