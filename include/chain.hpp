@@ -6,6 +6,7 @@
 #include "tsallis_distribution.hpp"
 
 #include <gsl/gsl-lite.hpp>
+#include <lbfgs/lbfgs.hpp>
 
 #include <cmath> // std::sqrt, std::pow
 #include <cstddef>
@@ -33,6 +34,11 @@ struct result_t {
 
 namespace detail {
 
+/// \brief Determines whether `T` has a member function `wrap` which can be
+/// called with a single argument of type `X`.
+///
+/// In other words, if we have an object `t` of type `T` and `x` of type `X`,
+/// this trait determines whether `t.wrap(x)` is a valid expression.
 template <class T, class X, class = void>
 struct has_wrap_mem_fn : std::false_type {};
 
@@ -44,6 +50,12 @@ struct has_wrap_mem_fn<
 template <class T, class X>
 inline constexpr auto has_wrap_mem_fn_v = has_wrap_mem_fn<T, X>::value;
 
+/// \brief Determines whether `T` has a member function `value` which can be
+/// called with a single argument of type `gsl::span<float const>`.
+///
+/// In other words, if we have an object `t` of type `T` and `x` of type
+/// `gsl::span<float const>`, this trait determines whether `t.value(x)` is a
+/// valid expression.
 template <class T, class = void> struct has_value_mem_fn : std::false_type {};
 
 template <class T>
@@ -54,6 +66,14 @@ struct has_value_mem_fn<T, std::void_t<decltype(std::declval<T>().value(
 template <class T>
 inline constexpr auto has_value_mem_fn_v = has_value_mem_fn<T>::value;
 
+/// \brief Determines whether `T` has a member function `value_from_diff` which
+/// can be called with `std::pair<gsl::span<float const>, double>` and
+/// `std::pair<size_t, float>`.
+///
+/// In other words, if we have an object `t` of type `T`, `x` of type
+/// `std::pair<gsl::span<float const>, double>`, and `y` of type
+/// `std::pair<size_t, float>`, this trait determines whether
+/// `t.value_from_diff(x, y)` is a valid expression.
 template <class T, class = void>
 struct has_value_from_diff_mem_fn : std::false_type {};
 
@@ -184,11 +204,11 @@ template <class TargetFn, class Generator> class sa_chain_t { // {{{
     target_fn_type         _target_fn;
     workspace_t&           _workspace;
     tsallis_distribution_t _tsallis_dist;
-    urnbg_type&            _generator;
-    param_t const&         _params;
-    size_t                 _i; ///< Current iteration.
-    size_t                 _num_accepted;
-    size_t                 _num_f_evals;
+    urnbg_type&            _generator;    ///< Random number generator
+    param_t const&         _params;       ///< Algorithm hyper-parameters
+    size_t                 _i;            ///< Current iteration.
+    size_t                 _num_accepted; ///< Number of moves accepted so far
+    size_t _num_f_evals; ///< Number of function evaluations till now
 
   public:
     sa_chain_t(target_fn_type target_fn, workspace_t& workspace,
@@ -217,6 +237,8 @@ template <class TargetFn, class Generator> class sa_chain_t { // {{{
     sa_chain_t& operator=(sa_chain_t&&) = delete;
 
     inline auto operator()() -> void;
+    inline auto local_search(tcm::lbfgs::lbfgs_param_t const&)
+        -> tcm::lbfgs::status_t;
 
     constexpr auto iteration() const noexcept { return _i; }
     constexpr auto num_f_evals() const noexcept { return _num_f_evals; }
@@ -347,6 +369,52 @@ auto sa_chain_t<TargetFn, Generator>::operator()() -> void
     // NOTE: Don't forget this!
     ++_i;
 }
+
+template <class TargetFn, class Generator>
+auto sa_chain_t<TargetFn, Generator>::local_search(
+    tcm::lbfgs::lbfgs_param_t const& params) -> tcm::lbfgs::status_t
+{
+    _workspace.proposed = _workspace.current;
+    auto r              = tcm::lbfgs::minimize(
+        [this](gsl::span<float const> x, gsl::span<float> g) {
+            // NOTE: We keep track of the number of function evaluations
+            ++_num_f_evals;
+            return _target_fn.value_and_gradient(x, g);
+        },
+        params, _workspace.proposed.x);
+    _workspace.proposed.func = r.func;
+
+    switch (r.status) {
+    case tcm::lbfgs::status_t::too_many_iterations:
+    case tcm::lbfgs::status_t::maximum_step_reached:
+    case tcm::lbfgs::status_t::minimum_step_reached:
+    case tcm::lbfgs::status_t::too_many_function_evaluations:
+    case tcm::lbfgs::status_t::interval_too_small:
+    case tcm::lbfgs::status_t::rounding_errors_prevent_progress:
+        // These are all questionable cases. We proceed only if L-BFGS managed
+        // to reduce the loss
+        if (_workspace.proposed.func >= _workspace.current.func) {
+            return tcm::lbfgs::status_t::success;
+            break;
+        }
+    case tcm::lbfgs::status_t::success:
+        using std::swap;
+        swap(_workspace.proposed, _workspace.current);
+        if (_workspace.current.func < _workspace.best.func) {
+            _workspace.best = _workspace.current;
+            DUAL_ANNEALING_TRACE(
+                "updating best after local search: func=%.5e\n",
+                _workspace.best.func);
+        }
+        return tcm::lbfgs::status_t::success;
+        break;
+    default:
+        // All other cases are "real" errors, so we don't update
+        // `_workspace.current`.
+        break;
+    } // end switch
+    return r.status;
+}
 // }}}
 
 template <class Objective, class Generator>
@@ -377,6 +445,53 @@ DA_NOINLINE auto minimize(Objective&& obj, gsl::span<float> x,
                     /*num_iter=*/chain.iteration(),
                     /*num_f_evals=*/chain.num_f_evals(),
                     /*acceptance=*/chain.acceptance()};
+}
+
+template <class Objective, class Generator>
+DA_NOINLINE auto
+minimize(Objective&& obj, gsl::span<float> x, param_t const& parameters,
+         tcm::lbfgs::lbfgs_param_t const& local_search_parameters,
+         Generator&                       generator) -> result_t
+{
+    auto workspace = thread_local_workspace(x.size());
+    if (!workspace.has_value()) {
+        // Memory allocation failed
+        // TODO(twesterhout): Convert this to error_codes
+        throw std::bad_alloc{};
+    }
+
+    std::memcpy(workspace->current.x.data(), x.data(),
+                x.size() * sizeof(float));
+    sa_chain_t<Objective&, Generator> chain{obj, *workspace, parameters,
+                                            generator};
+    auto best     = std::numeric_limits<double>::infinity();
+    auto patience = parameters.patience;
+    auto finalise = [x, &workspace, &chain]() {
+        std::memcpy(x.data(), workspace->best.x.data(),
+                    x.size() * sizeof(float));
+        return result_t{/*func=*/workspace->best.func,
+                        /*num_iter=*/chain.iteration(),
+                        /*num_f_evals=*/chain.num_f_evals(),
+                        /*acceptance=*/chain.acceptance()};
+    };
+
+    if (auto status = chain.local_search(local_search_parameters);
+        status != tcm::lbfgs::status_t::success) {
+        return finalise();
+    }
+    for (; chain.iteration() < parameters.num_iter && patience != 0;
+         --patience) {
+        chain();
+        if (workspace->best.func < best) {
+            best     = workspace->best.func;
+            patience = parameters.patience;
+            if (auto status = chain.local_search(local_search_parameters);
+                status != tcm::lbfgs::status_t::success) {
+                return finalise();
+            }
+        }
+    }
+    return finalise();
 }
 
 DA_NAMESPACE_END

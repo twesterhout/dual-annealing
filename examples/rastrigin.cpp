@@ -56,20 +56,29 @@ struct rastrigin_t {
 
     auto value(gsl::span<float const> x) const -> float
     {
-        auto const shift = 0.0f;
-        auto       E     = 0.0f;
+        constexpr auto A = 10.0;
+        auto           E = 0.0;
         for (auto i = size_t{0}; i < x.size(); ++i) {
-            E += std::pow(x[i] - shift, 2.0f)
-                 - 10.0f
-                       * std::cos(2.0f * static_cast<float>(M_PI)
-                                  * (x[i] - shift));
+            auto const a = static_cast<double>(x[i]);
+            E += a * a - A * std::cos(2.0 * M_PI * a);
         }
-        E += 10.0f * x.size() + shift;
+        E += A * x.size();
         return E;
     }
 
     auto wrap(float const x) const -> float { return _wrap(x); }
 
+    auto value_and_gradient(gsl::span<float const> x, gsl::span<float> g) const
+        -> double
+    {
+        constexpr auto A = 10.0;
+        for (auto i = size_t{0}; i < x.size(); ++i) {
+            auto const a = static_cast<double>(x[i]);
+            g[i]         = static_cast<float>(
+                2 * a + 2 * M_PI * A * std::sin(2.0 * M_PI * a));
+        }
+        return value(x);
+    }
 #if 0
     auto operator()(size_t const i, float const x, float const value,
                     gsl::span<float const> xs) const -> float
@@ -98,14 +107,15 @@ int main(int argc, char* argv[])
     using std::begin, std::end;
     auto const params = dual_annealing::param_t{/*q_V=*/2.67,
                                                 /*q_A=*/-5.0,
-                                                /*t_0=*/5300.0,
+                                                /*t_0=*/10.0,
+                                                // /*t_0=*/5300.0,
                                                 /*num_iter=*/1000,
-                                                /*patience=*/10};
+                                                /*patience=*/20};
 
-    pcg32 generator{12345};
+    pcg32 generator{1230045};
     auto  energy_fn = rastrigin_t{};
 
-    std::vector<float> xs(10);
+    std::vector<float> xs(100);
     for (auto& x : xs) {
         x = std::uniform_real_distribution<float>{-1.0f, 3.0f}(generator);
     }
@@ -115,8 +125,10 @@ int main(int argc, char* argv[])
               std::ostream_iterator<float>{std::cout, ", "});
     std::cout << "]) = " << energy_fn.value(xs) << '\n';
 
-    auto const result =
-        dual_annealing::minimize(energy_fn, xs, params, generator);
+    auto local_search_parameters  = tcm::lbfgs::lbfgs_param_t{};
+    local_search_parameters.x_tol = 1e-5;
+    auto const result             = dual_annealing::minimize(
+        energy_fn, xs, params, local_search_parameters, generator);
 
     std::cout << "After : f([";
     std::copy(begin(xs), end(xs),

@@ -128,6 +128,8 @@ target_include_directories(pcg INTERFACE
 if (NOT TARGET gsl::gsl-lite)
     add_subdirectory(third_party/gsl-lite)
 endif()
+
+set(LBFGS_DEBUG OFF)
 add_subdirectory(third_party/lbfgs-cpp)
 
 if (DA_BUILD_TESTING)
@@ -182,7 +184,7 @@ add_library(dual_annealing SHARED
     include/chain.hpp
     src/assert.cpp
     src/buffers.cpp)
-target_link_libraries(dual_annealing Common gsl::gsl-lite)
+target_link_libraries(dual_annealing PUBLIC Common gsl::gsl-lite lbfgs-cpp::lbfgs)
 
 # if (TRUE)
 #     target_compile_options(line_search PUBLIC "-fprofile-instr-generate" "-fcoverage-mapping")
