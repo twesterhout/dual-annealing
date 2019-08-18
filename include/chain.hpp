@@ -20,8 +20,15 @@ struct param_t {
     float  q_V;
     float  q_A;
     float  t_0;
-    size_t dimension;
-    size_t num_iterations;
+    size_t num_iter;
+    size_t patience;
+};
+
+struct result_t {
+    double func;
+    size_t num_iter;
+    size_t num_f_evals;
+    double acceptance;
 };
 
 namespace detail {
@@ -180,21 +187,25 @@ template <class TargetFn, class Generator> class sa_chain_t { // {{{
     urnbg_type&            _generator;
     param_t const&         _params;
     size_t                 _i; ///< Current iteration.
-                               ///<
+    size_t                 _num_accepted;
+    size_t                 _num_f_evals;
+
   public:
     sa_chain_t(target_fn_type target_fn, workspace_t& workspace,
                param_t const& params, urnbg_type& generator) noexcept
         : _target_fn{target_fn}
         , _workspace{workspace}
+        // t_0 here is arbitrary since we'll update it in operator() anyway
         , _tsallis_dist{params.q_V, params.t_0}
         , _generator{generator}
         , _params{params}
         , _i{0}
+        , _num_accepted{0}
+        , _num_f_evals{0}
     {
         // We only rely on `_workspace.current.x` being properly initialised.
-        _workspace.current.func =
-            detail::do_value(_target_fn, _workspace.current.x);
-        _workspace.best = _workspace.current;
+        _workspace.current.func = value(_workspace.current.x);
+        _workspace.best         = _workspace.current;
         std::memset(_workspace.proposed.x.data(), 0,
                     _workspace.proposed.x.size() * sizeof(float));
         _workspace.proposed.func = std::numeric_limits<double>::quiet_NaN();
@@ -207,12 +218,22 @@ template <class TargetFn, class Generator> class sa_chain_t { // {{{
 
     inline auto operator()() -> void;
 
+    constexpr auto iteration() const noexcept { return _i; }
+    constexpr auto num_f_evals() const noexcept { return _num_f_evals; }
+    constexpr auto acceptance() const noexcept
+    {
+        if (_i == 0) { return std::numeric_limits<double>::quiet_NaN(); }
+        // During one iteration we run a Markov Chain of length 2 * dim()
+        return static_cast<double>(_num_accepted)
+               / static_cast<double>(2U * _i * dim());
+    }
+
   private:
     constexpr auto t_0() const noexcept { return _params.t_0; }
     constexpr auto q_V() const noexcept { return _params.q_V; }
     constexpr auto q_A() const noexcept { return _params.q_A; }
     /// Returns the dimension of the parameter space.
-    constexpr auto dim() const noexcept { return _params.dimension; }
+    constexpr auto dim() const noexcept { return _workspace.current.x.size(); }
 
     /// Calculates the visiting temperature `t_V` for iteration \p i.
     [[nodiscard]] auto temperature(size_t i) const noexcept -> float
@@ -221,6 +242,19 @@ template <class TargetFn, class Generator> class sa_chain_t { // {{{
         auto const den =
             std::pow(static_cast<float>(2 + i), q_V() - 1.0f) - 1.0f;
         return num / den;
+    }
+
+    auto value(gsl::span<float const> x) -> double
+    {
+        ++_num_f_evals;
+        return detail::do_value(_target_fn, x);
+    }
+
+    auto value_from_diff(std::pair<gsl::span<float const>, double> current,
+                         std::pair<size_t, float> diff) -> double
+    {
+        ++_num_f_evals;
+        return detail::do_value_from_diff(_target_fn, current, diff);
     }
 
     template <class Accept, class Reject>
@@ -254,20 +288,15 @@ template <class TargetFn, class Generator> class sa_chain_t { // {{{
                        begin(_workspace.proposed.x), [this, &g](auto const x) {
                            return detail::do_wrap(_target_fn, x + g());
                        });
-        _workspace.proposed.func =
-            detail::do_value(_target_fn, _workspace.proposed.x);
-        DUAL_ANNEALING_TRACE("generate_full(): func=%.5e\n",
-                             _workspace.proposed.func);
+        _workspace.proposed.func = value(_workspace.proposed.x);
     }
 
     inline auto generate_one(size_t const i) -> std::tuple<float, double>
     {
         auto const x = detail::do_wrap(_target_fn, _tsallis_dist(_generator));
-        auto const func = detail::do_value_from_diff(
-            _target_fn,
+        auto const func = value_from_diff(
             std::make_pair(_workspace.current.x, _workspace.current.func),
             std::make_pair(i, x));
-        DUAL_ANNEALING_TRACE("generate_one(%zu): func=%.5e\n", i, func);
         return {x, func};
     }
 };
@@ -284,9 +313,8 @@ auto sa_chain_t<TargetFn, Generator>::operator()() -> void
     for (auto j = 0U; j < dim(); ++j) {
         auto const accept = [this]() {
             using std::swap;
+            ++_num_accepted;
             swap(_workspace.current, _workspace.proposed);
-            DUAL_ANNEALING_TRACE("%.5e < %.5e ?\n", _workspace.current.func,
-                                 _workspace.best.func);
             if (_workspace.current.func < _workspace.best.func) {
                 _workspace.best = _workspace.current;
                 DUAL_ANNEALING_TRACE("updating best: func=%.5e\n",
@@ -302,10 +330,9 @@ auto sa_chain_t<TargetFn, Generator>::operator()() -> void
     for (auto j = 0U; j < dim(); ++j) {
         auto const [x, func] = generate_one(j);
         auto const accept    = [this, j, x = x, func = func]() {
+            ++_num_accepted;
             _workspace.current.x[j] = x;
             _workspace.current.func = func;
-            DUAL_ANNEALING_TRACE("%.5e < %.5e ?\n", _workspace.current.func,
-                                 _workspace.best.func);
             if (_workspace.current.func < _workspace.best.func) {
                 _workspace.best = _workspace.current;
                 DUAL_ANNEALING_TRACE("updating best: func=%.5e\n",
@@ -323,20 +350,33 @@ auto sa_chain_t<TargetFn, Generator>::operator()() -> void
 // }}}
 
 template <class Objective, class Generator>
-auto minimize(Objective&& obj, gsl::span<float> x, param_t const& parameters,
-              Generator& generator) -> double
+DA_NOINLINE auto minimize(Objective&& obj, gsl::span<float> x,
+                          param_t const& parameters, Generator& generator)
+    -> result_t
 {
-    sa_buffers_t buffers{x.size()}; // TODO(twesterhout): Optimise this
-    auto         workspace = buffers.workspace();
-
-    std::memcpy(workspace.current.x.data(), x.data(), x.size() * sizeof(float));
-    sa_chain_t<Objective&, Generator> chain{obj, workspace, parameters,
-                                            generator};
-    for (auto i = parameters.num_iterations; i != 0; --i) {
-        chain();
+    auto workspace = thread_local_workspace(x.size());
+    if (!workspace.has_value()) {
+        // Memory allocation failed
+        // TODO(twesterhout): Convert this to error_codes
+        throw std::bad_alloc{};
     }
-    std::memcpy(x.data(), workspace.best.x.data(), x.size() * sizeof(float));
-    return workspace.best.func;
+
+    std::memcpy(workspace->current.x.data(), x.data(),
+                x.size() * sizeof(float));
+    sa_chain_t<Objective&, Generator> chain{obj, *workspace, parameters,
+                                            generator};
+    auto best     = std::numeric_limits<double>::infinity();
+    auto patience = parameters.patience;
+    for (; chain.iteration() < parameters.num_iter && patience != 0;
+         --patience) {
+        chain();
+        if (workspace->best.func < best) { patience = parameters.patience; }
+    }
+    std::memcpy(x.data(), workspace->best.x.data(), x.size() * sizeof(float));
+    return result_t{/*func=*/workspace->best.func,
+                    /*num_iter=*/chain.iteration(),
+                    /*num_f_evals=*/chain.num_f_evals(),
+                    /*acceptance=*/chain.acceptance()};
 }
 
 DA_NAMESPACE_END

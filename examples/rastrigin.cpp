@@ -99,8 +99,8 @@ int main(int argc, char* argv[])
     auto const params = dual_annealing::param_t{/*q_V=*/2.67,
                                                 /*q_A=*/-5.0,
                                                 /*t_0=*/5300.0,
-                                                /*dimension=*/10,
-                                                /*num_iterations=*/1000};
+                                                /*num_iter=*/1000,
+                                                /*patience=*/10};
 
     pcg32 generator{12345};
     auto  energy_fn = rastrigin_t{};
@@ -115,13 +115,15 @@ int main(int argc, char* argv[])
               std::ostream_iterator<float>{std::cout, ", "});
     std::cout << "]) = " << energy_fn.value(xs) << '\n';
 
-    auto const func =
+    auto const result =
         dual_annealing::minimize(energy_fn, xs, params, generator);
 
     std::cout << "After : f([";
     std::copy(begin(xs), end(xs),
               std::ostream_iterator<float>{std::cout, ", "});
-    std::cout << "]) = " << func << '\n';
-
+    std::cout << "]) = " << result.func << '\n';
+    std::cout << "Number iterations: " << result.num_iter << '\n'
+              << "Number function evaluations: " << result.num_f_evals << '\n'
+              << "Acceptance: " << result.acceptance << '\n';
     return EXIT_SUCCESS;
 }
