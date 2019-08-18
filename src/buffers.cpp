@@ -4,6 +4,7 @@
 
 #include <cstring>   // std::memset
 #include <memory>    // std::unique_ptr, std::aligned_alloc, etc.
+#include <optional>  // std::optional
 #include <stdexcept> // std::overflow_error, std::bad_alloc
 
 DA_NAMESPACE_BEGIN
@@ -143,6 +144,33 @@ DA_EXPORT auto sa_buffers_t::workspace() noexcept -> workspace_t
     using point_t = workspace_t::point_t;
     return workspace_t{point_t{impl().get<0>()}, point_t{impl().get<1>()},
                        point_t{impl().get<2>()}};
+}
+
+DA_EXPORT auto thread_local_workspace(size_t const size) noexcept
+    -> std::optional<workspace_t>
+{
+    static thread_local sa_buffers_t buffers{};
+    try {
+        buffers.resize(size); // May throw
+        return buffers.workspace();
+    }
+    // Yes, catching exceptions is not very efficient, but we expect these catch
+    // blocks to never ever be reached in practice.
+    catch (std::overflow_error const& e) {
+        DUAL_ANNEALING_TRACE("%s: caught std::overflow_error: %s\n",
+                             DUAL_ANNEALING_CURRENT_FUNCTION, e.what());
+        return std::nullopt;
+    }
+    catch (std::bad_alloc const& e) {
+        DUAL_ANNEALING_TRACE("%s: caught std::bad_alloc: %s\n",
+                             DUAL_ANNEALING_CURRENT_FUNCTION, e.what());
+        return std::nullopt;
+    }
+    catch (...) {
+        DUAL_ANNEALING_ASSERT(
+            false, "unexpected exception in 'thread_local_workspace(size_t)'");
+        return std::nullopt;
+    }
 }
 
 DA_NAMESPACE_END

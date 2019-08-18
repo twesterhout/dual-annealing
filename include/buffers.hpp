@@ -2,17 +2,18 @@
 
 #include "assert.hpp"
 #include "config.hpp"
-#include <gsl/gsl-lite.hpp>
-#include <cstddef>     // size_t
-#include <cstring>     // std::memcpy
-#include <type_traits> // std::aligned_storage
+#include <gsl/gsl-lite.hpp> // gsl::span
+#include <cstddef>          // size_t
+#include <cstring>          // std::memcpy
+#include <optional>         // std::optional
+#include <type_traits>      // std::aligned_storage
 
-DA_NAMESPACE_BEGIN
+DUAL_ANNEALING_NAMESPACE_BEGIN
 
 struct workspace_t {
     struct point_t {
-        double           func;
-        gsl::span<float> x;
+        double           func; ///< Function value at #x.
+        gsl::span<float> x;    ///< Location in the parameter space
 
         explicit constexpr point_t(double const           _func,
                                    gsl::span<float> const _x) noexcept
@@ -24,15 +25,21 @@ struct workspace_t {
         {}
 
         constexpr point_t(point_t const& other) noexcept = default;
+        constexpr point_t(point_t&& other) noexcept      = default;
+
+        /// Copy assignment which copies data from \p other into `*this`.
         auto operator=(point_t const& other) noexcept -> point_t&
         {
-            DUAL_ANNEALING_ASSERT(this != &other);
+            if (DUAL_ANNEALING_UNLIKELY(this == &other)) { return *this; }
             DUAL_ANNEALING_ASSERT(x.size() == other.x.size(),
                                   "incompatible dimensions");
             func = other.func;
             std::memcpy(x.data(), other.x.data(), x.size() * sizeof(float));
             return *this;
         }
+
+        constexpr auto operator=(point_t&& other) noexcept
+            -> point_t&        = default;
     };
 
     point_t current;
@@ -61,4 +68,6 @@ struct sa_buffers_t {
     auto workspace() noexcept -> workspace_t;
 };
 
-DA_NAMESPACE_END
+auto thread_local_workspace(size_t size) noexcept -> std::optional<workspace_t>;
+
+DUAL_ANNEALING_NAMESPACE_END
