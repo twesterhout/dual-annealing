@@ -1,17 +1,49 @@
+// Copyright (c) 2019, Tom Westerhout
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// * Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+//
+// * Redistributions in binary form must reproduce the above copyright notice,
+//   this list of conditions and the following disclaimer in the documentation
+//   and/or other materials provided with the distribution.
+//
+// * Neither the name of the copyright holder nor the names of its
+//   contributors may be used to endorse or promote products derived from
+//   this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 #pragma once
 
 #include "assert.hpp"
 #include "config.hpp"
 
-#include <cmath> // std::sqrt, std::pow
-#include <random>
+#include <cmath>  // std::sqrt, std::pow
+#include <random> // std::normal_distribution, std::gamma_distribution
 
-DA_NAMESPACE_BEGIN
+DUAL_ANNEALING_NAMESPACE_BEGIN
 
+/// \brief Tsallis distribution.
+///
+/// \warning It __does not__ model the `RandomNumberDistribution` concept.
 struct tsallis_distribution_t {
-  private:
-    using real_type = float;
+    using real_type   = float;
+    using result_type = real_type;
 
+  private:
     /// \brief Calculation of \f$p\f$ given \f$q_V\f$ (see `Tsallis_RNG`
     /// function in [@Schanze2006] for an explanation).
     ///
@@ -49,6 +81,8 @@ struct tsallis_distribution_t {
         constexpr param_type() noexcept : _q_V{0}, _t_V{0}, _s{0} {}
 
       public:
+        using distribution_type = tsallis_distribution_t;
+
         explicit /*constexpr*/ param_type(real_type const q_V,
                                           real_type const t_V) noexcept
             : _q_V{q_V}, _t_V{t_V}
@@ -61,28 +95,29 @@ struct tsallis_distribution_t {
 
         constexpr param_type(param_type const&) noexcept = default;
         constexpr param_type(param_type&&) noexcept      = default;
-
         constexpr auto operator=(param_type const& other) noexcept
-            -> param_type&
-        {
-            _q_V = other._q_V;
-            _t_V = other._t_V;
-            _s   = other._s;
-            return *this;
-        }
-
-        constexpr auto operator=(param_type&& other) noexcept -> param_type&
-        {
-            _q_V = other._q_V;
-            _t_V = other._t_V;
-            _s   = other._s;
-            return *this;
-        }
+            -> param_type&     = default;
+        constexpr auto operator=(param_type&& other) noexcept
+            -> param_type&     = default;
 
         [[nodiscard]] constexpr auto q_V() const noexcept { return _q_V; }
         [[nodiscard]] constexpr auto t_V() const noexcept { return _t_V; }
         [[nodiscard]] constexpr auto s() const noexcept { return _s; }
+
+        friend constexpr auto operator==(param_type const& lhs,
+                                         param_type const& rhs) noexcept -> bool
+        {
+            return lhs._q_V == rhs._q_V && lhs._t_V == rhs._t_V;
+        }
+
+        friend constexpr auto operator!=(param_type const& lhs,
+                                         param_type const& rhs) noexcept -> bool
+        {
+            return !(lhs == rhs);
+        }
     };
+
+    static_assert(std::is_trivially_copyable_v<param_type>);
 
     explicit tsallis_distribution_t(real_type const q_V,
                                     real_type const t_V) noexcept
@@ -100,6 +135,7 @@ struct tsallis_distribution_t {
 
     [[nodiscard]] constexpr auto q_V() const noexcept { return _params.q_V(); }
     [[nodiscard]] constexpr auto t_V() const noexcept { return _params.t_V(); }
+    [[nodiscard]] constexpr auto s() const noexcept { return _params.s(); }
 
     [[nodiscard]] constexpr auto param() const noexcept -> param_type
     {
@@ -108,6 +144,8 @@ struct tsallis_distribution_t {
 
     constexpr auto param(param_type const& params) noexcept -> void
     {
+        // NOTE: this is an optimisation since gamma_distribution has some
+        // internal state which we don't want to screw up needlessly.
         if (_params.q_V() != params.q_V()) {
             _gamma_dist.param(
                 typename std::gamma_distribution<real_type>::param_type{
@@ -116,8 +154,9 @@ struct tsallis_distribution_t {
         _params = params;
     }
 
+    /// Draws a single #real_type from the 1D distribution
     template <class Generator>
-    auto operator()(Generator& generator) noexcept -> real_type
+    [[nodiscard]] auto operator()(Generator& generator) noexcept -> real_type
     {
         auto const u = _gamma_dist(generator);
         auto const y = _params.s() * std::sqrt(u);
@@ -125,6 +164,8 @@ struct tsallis_distribution_t {
         return x / y;
     }
 
+    /// Returns a function which can be used to draw a vector from N-D
+    /// distribution.
     template <class Generator> auto many(Generator& generator) noexcept
     {
         auto const u = _gamma_dist(generator);
@@ -149,6 +190,7 @@ struct tsallis_distribution_t {
             return term_1 * term_2 * term_3;
         };
         auto const b_fn = [q](auto const d) {
+            // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers, readability-magic-numbers)
             return 1.0 / (1.0 - q) + (1.0 - d) / 2.0;
         };
 
@@ -180,4 +222,4 @@ struct tsallis_distribution_t {
     param_type                          _params;
 };
 
-DA_NAMESPACE_END
+DUAL_ANNEALING_NAMESPACE_END

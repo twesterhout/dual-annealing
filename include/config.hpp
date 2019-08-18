@@ -50,14 +50,22 @@
 // clang-format on
 #endif
 
-#if defined(WIN32) || defined(_WIN32)
+#if defined(_MSV_VER)
 #    define DA_EXPORT __declspec(dllexport)
 #    define DA_NOINLINE __declspec(noinline)
 #    define DA_FORCEINLINE __forceinline inline
+#    define DUAL_ANNEALING_LIKELY(cond) (cond)
+#    define DUAL_ANNEALING_UNLIKELY(cond) (cond)
+#    define DUAL_ANNEALING_CURRENT_FUNCTION __FUNCTION__
+#    define DUAL_ANNEALING_RESTRICT
 #else
 #    define DA_EXPORT __attribute__((visibility("default")))
 #    define DA_NOINLINE __attribute__((noinline))
 #    define DA_FORCEINLINE __attribute__((always_inline)) inline
+#    define DUAL_ANNEALING_LIKELY(cond) __builtin_expect(!!(cond), 1)
+#    define DUAL_ANNEALING_UNLIKELY(cond) __builtin_expect(!!(cond), 0)
+#    define DUAL_ANNEALING_CURRENT_FUNCTION __PRETTY_FUNCTION__
+#    define DUAL_ANNEALING_RESTRICT __restrict__
 #endif
 
 #if defined(NDEBUG)
@@ -69,8 +77,11 @@
 #define TCM_NOEXCEPT noexcept
 
 #define DA_NAMESPACE dual_annealing
+#define DUAL_ANNEALING_NAMESPACE dual_annealing
 #define DA_NAMESPACE_BEGIN namespace dual_annealing {
-#define DA_NAMESPACE_END } // namespace dual_annealing
+#define DUAL_ANNEALING_NAMESPACE_BEGIN namespace dual_annealing {
+#define DA_NAMESPACE_END }             // namespace dual_annealing
+#define DUAL_ANNEALING_NAMESPACE_END } // namespace dual_annealing
 
 #include <cstdio>
 #define DUAL_ANNEALING_TRACE(fmt, ...)                                         \
@@ -79,14 +90,3 @@
             stderr, "\x1b[1m\x1b[97m%s:%i:\x1b[0m \x1b[90mtrace:\x1b[0m " fmt, \
             __FILE__, __LINE__, __VA_ARGS__);                                  \
     } while (false)
-
-#if !defined(NDEBUG)
-#    if defined(__cplusplus)
-#        include <cassert>
-#    else
-#        include <assert.h>
-#    endif
-#    define TCM_ASSERT(cond, msg) assert((cond) && (msg)) /* NOLINT */
-#else
-#    define TCM_ASSERT(cond, msg)
-#endif
